@@ -2,7 +2,8 @@
 import atexit
 import sys
 import traceback
-
+import pdb
+import time
 # On some systems mpi4py is available but broken we avoid crashes by importing
 # it only when an MPI Pool is explicitly created.
 # Still make it a global to avoid messing up other things.
@@ -17,7 +18,6 @@ __all__ = ['MPIPool']
 
 def _dummy_callback(x):
     pass
-
 
 def _import_mpi(quiet=False, use_dill=False):
     global MPI
@@ -133,7 +133,7 @@ class MPIPool(BasePool):
         if callback is not None:
             callback()
 
-    def map(self, worker, tasks, callback=None, args=None):
+    def map(self, worker, tasks, callback=None, fargs=None):
         """Evaluate a function or callable on each task in parallel using MPI.
 
         The callable, ``worker``, is called on each element of the ``tasks``
@@ -156,8 +156,8 @@ class MPIPool(BasePool):
             result from each worker run and is executed on the master process.
             This is useful for, e.g., saving results to a file, since the
             callback is only called on the master thread.
-        args : tuple, optional
-            arguments to send to worker
+        fargs : tuple, optional
+            additional arguments to send to worker
 
         Returns
         -------
@@ -179,12 +179,13 @@ class MPIPool(BasePool):
         pending = len(tasklist)
 
         while pending:
+            t0 = time.time()
             if workerset and tasklist:
                 worker = workerset.pop()
                 taskid, task = tasklist.pop()
 
                 # Append args to task
-                task[1][1] += args
+                task = (task[0], task[1] + fargs)
                 log.log(_VERBOSE, "Sent task %s to worker %s with tag %s",
                         task[1], worker, taskid)
                 self.comm.send(task, dest=worker, tag=taskid)
@@ -209,6 +210,8 @@ class MPIPool(BasePool):
             workerset.add(worker)
             resultlist[taskid] = result
             pending -= 1
+
+            print('Map loop iteration time: %f' % (time.time() - t0))
 
         return resultlist
 
