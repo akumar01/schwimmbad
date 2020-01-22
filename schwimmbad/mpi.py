@@ -4,6 +4,7 @@ import sys
 import traceback
 import pdb
 import time
+import gc
 # On some systems mpi4py is available but broken we avoid crashes by importing
 # it only when an MPI Pool is explicitly created.
 # Still make it a global to avoid messing up other things.
@@ -133,7 +134,7 @@ class MPIPool(BasePool):
         if callback is not None:
             callback()
 
-    def map(self, worker, tasks, callback=None, fargs=None):
+    def map(self, worker, tasks, callback=None, fargs=None, track_results=True):
         """Evaluate a function or callable on each task in parallel using MPI.
 
         The callable, ``worker``, is called on each element of the ``tasks``
@@ -158,6 +159,9 @@ class MPIPool(BasePool):
             callback is only called on the master thread.
         fargs : tuple, optional
             additional arguments to send to worker
+        track_result : Boolean
+            Should we track the results in memory (disable to throw them away once
+            passed to the callback function)
 
         Returns
         -------
@@ -175,7 +179,10 @@ class MPIPool(BasePool):
 
         workerset = self.workers.copy()
         tasklist = [(tid, (worker, arg)) for tid, arg in enumerate(tasks)]
-        resultlist = [None] * len(tasklist)
+        if track_results:
+            resultlist = [None] * len(tasklist)
+        else:
+            resultlist = None
         pending = len(tasklist)
 
         while pending:
@@ -184,8 +191,8 @@ class MPIPool(BasePool):
                 worker = workerset.pop()
                 taskid, task = tasklist.pop()
 
-                # Append args to task
-                task = (task[0], task[1] + fargs)
+                if fargs is not None:
+                    task = (task[0], task[1] + fargs)
                 log.log(_VERBOSE, "Sent task %s to worker %s with tag %s",
                         task[1], worker, taskid)
                 self.comm.send(task, dest=worker, tag=taskid)
@@ -208,8 +215,13 @@ class MPIPool(BasePool):
             callback(result)
 
             workerset.add(worker)
-            resultlist[taskid] = result
+            
+            if track_results:
+                resultlist[taskid] = result
             pending -= 1
+            
+            # Force garbage collection to save memory    
+            gc.collect()            
 
             print('Map loop iteration time: %f' % (time.time() - t0))
 
