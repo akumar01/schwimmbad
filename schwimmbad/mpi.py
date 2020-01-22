@@ -4,6 +4,7 @@ import sys
 import traceback
 import pdb
 import time
+    
 # On some systems mpi4py is available but broken we avoid crashes by importing
 # it only when an MPI Pool is explicitly created.
 # Still make it a global to avoid messing up other things.
@@ -17,7 +18,7 @@ __all__ = ['MPIPool']
 
 
 def _dummy_callback(x):
-    pass
+        pass
 
 def _import_mpi(quiet=False, use_dill=False):
     global MPI
@@ -51,15 +52,32 @@ class MPIPool(BasePool):
     comm : :class:`mpi4py.MPI.Comm`, optional
         An MPI communicator to distribute tasks with. If ``None``, this uses
         ``MPI.COMM_WORLD`` by default.
+    subgroups : list of lists, optional
+        A list of list of ranks to divide the total comm object into. If provided, 
+        tasks will be distrubted by master to all ranks, but then subcommunicators 
+        will be created out of each group of processes and passed to the task function
+        as an additional argument
     use_dill: Set `True` to use `dill` serialization. Default is `False`.
     """
 
-    def __init__(self, comm=None, use_dill=False):
+    def __init__(self, comm=None, subgroups=None, use_dill=False):
         MPI = _import_mpi(use_dill=use_dill)
 
         if comm is None:
             comm = MPI.COMM_WORLD
         self.comm = comm
+
+        # Ensure that rank 0 is not contained in any of the subgroups:
+        if subgroups is not None:
+            self.subgroups = []
+            for subgroup in subgroups:
+                subgroup = set(subgroup)
+                if 0 in subgroup:
+                    print('Warning: Removing rank 0 from subgroup as it will be used as the master thread')
+                    subgroup.discard(0)
+                self.subgroups.append(subgroup)
+        else:
+            self.subgroups = subgroups
 
         self.master = 0
         self.rank = self.comm.Get_rank()
@@ -67,6 +85,14 @@ class MPIPool(BasePool):
         atexit.register(lambda: MPIPool.close(self))
 
         if not self.is_master():
+
+            # Create a subcommunicator object if needed
+            if self.subgroups is not None:
+                # Create a subcommunicator object  
+                color = [i for i in range(len(self.subgroups)) if self.rank in ]
+                subcomm = self.comm.Split(color, self.rank)
+                self.subcomm = subcomm
+
             # workers branch here and wait for work
             try:
                 self.wait()
@@ -123,12 +149,19 @@ class MPIPool(BasePool):
             log.log(_VERBOSE, "Worker {0} got task {1} with tag {2}"
                     .format(worker, arg, status.tag))
 
+            if self.subgroups is not None:
+                arg += (self.subcomm,)
+
             result = func(arg)
 
             log.log(_VERBOSE, "Worker {0} sending answer {1} with tag {2}"
                     .format(worker, result, status.tag))
 
             self.comm.ssend(result, self.master, status.tag)
+
+            # Wait for all subcomm members to sync up before receiving the next task
+            if self.subgroups is not None:
+                self.subcomm.barrier()
 
         if callback is not None:
             callback()
@@ -159,10 +192,6 @@ class MPIPool(BasePool):
         fargs : tuple, optional
             additional arguments to send to worker
 
-        Returns
-        -------
-        results : list
-            A list of results from the output of each ``worker()`` call.
         """
 
         # If not the master just wait for instructions.
@@ -175,7 +204,6 @@ class MPIPool(BasePool):
 
         workerset = self.workers.copy()
         tasklist = [(tid, (worker, arg)) for tid, arg in enumerate(tasks)]
-        resultlist = [None] * len(tasklist)
         pending = len(tasklist)
 
         while pending:
@@ -205,15 +233,14 @@ class MPIPool(BasePool):
             log.log(_VERBOSE, "Master received from worker %s with tag %s",
                     worker, taskid)
 
-            callback(result)
+            # None should only be returned by non subcomm root ranks
+            if result is not None:
+                callback(result)
 
             workerset.add(worker)
-            resultlist[taskid] = result
             pending -= 1
 
-            print('Map loop iteration time: %f' % (time.time() - t0))
-
-        return resultlist
+        return None
 
     def close(self):
         """ Tell all the workers to quit."""
