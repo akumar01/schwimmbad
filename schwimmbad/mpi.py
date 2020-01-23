@@ -85,7 +85,7 @@ class MPIPool(BasePool):
         atexit.register(lambda: MPIPool.close(self))
 
         if self.subgroups is not None:
-            # Create a subcommunicator object  
+            # Create a subcommunicator object with master thread as color 0
             if not self.is_master():
                 color = [i for i in range(len(self.subgroups)) if self.rank in self.subgroups[i]][0] + 1
             else:
@@ -136,19 +136,19 @@ class MPIPool(BasePool):
         if self.is_master():
             return
 
-        worker = self.comm.rank
         status = MPI.Status()
+
         while True:
             task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
                                   status=status)
 
             if task is None:
-                log.log(_VERBOSE, "Worker {0} told to quit work".format(worker))
+                log.log(_VERBOSE, "Worker {0} told to quit work".format(self.comm.rank))
                 break
 
             func, arg = task
             log.log(_VERBOSE, "Worker {0} got task {1} with tag {2}"
-                    .format(worker, arg, status.tag))
+                    .format(self.comm.rank, arg, status.tag))
 
             if self.subgroups is not None:
                 arg = (arg,) + (self.subcomm,)
@@ -156,9 +156,14 @@ class MPIPool(BasePool):
             result = func(arg)
 
             log.log(_VERBOSE, "Worker {0} sending answer {1} with tag {2}"
-                    .format(worker, result, status.tag))
+                    .format(self.comm.rank, result, status.tag))
 
-            self.comm.ssend(result, self.master, status.tag)
+            # Only send result if subcomm root
+            if self.subgroups is not None:
+                if self.subcomm.rank == 0:
+                    self.comm.ssend(result, self.master, status.tag)
+            else:
+                self.comm.ssend(result, self.master, status.tag)                
 
             # Wait for all subcomm members to sync up before receiving the next task
             if self.subgroups is not None:
@@ -167,7 +172,7 @@ class MPIPool(BasePool):
         if callback is not None:
             callback()
 
-    def map(self, worker, tasks, callback=None, fargs=None, track_results=True):
+    def map(self, task_fn, tasks, callback=None, fargs=None, track_results=True):
         """Evaluate a function or callable on each task in parallel using MPI.
 
         The callable, ``worker``, is called on each element of the ``tasks``
@@ -176,7 +181,7 @@ class MPIPool(BasePool):
 
         Parameters
         ----------
-        worker : callable
+        task_fn : callable
             A function or callable object that is executed on each element of
             the specified ``tasks`` iterable. This object must be picklable
             (i.e. it can't be a function scoped within a function or a
@@ -206,9 +211,13 @@ class MPIPool(BasePool):
         if callback is None:
             callback = _dummy_callback
 
-        workerset = self.workers.copy()
-        tasklist = [(tid, (worker, arg)) for tid, arg in enumerate(tasks)]
-       
+        # If there are subgroups, send a task to each group rather than each worker
+        if self.subgroups is not None: 
+            workerset = self.subgroups.copy()
+        else:
+            workerset = self.workers.copy()
+    
+        tasklist = [(tid, (task_fn, arg)) for tid, arg in enumerate(tasks)]       
         pending = len(tasklist)
         while pending:
             t0 = time.time()
@@ -220,8 +229,14 @@ class MPIPool(BasePool):
                     task = (task[0], task[1] + fargs)
                 log.log(_VERBOSE, "Sent task %s to worker %s with tag %s",
                         task[1], worker, taskid)
-                self.comm.send(task, dest=worker, tag=taskid)
-                print('Sent a task!')
+
+                if self.subgroups is not None:                 
+                    # Send task to each worker in subgroup
+                    for slaveid in worker:
+                        self.comm.send(task, dest=slaveid, tag=taskid)
+                else:
+                    self.comm.send(task, dest=worker, tag=taskid)
+
             if tasklist:
                 flag = self.comm.Iprobe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
                 if not flag:
@@ -230,9 +245,18 @@ class MPIPool(BasePool):
                 self.comm.Probe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
 
             status = MPI.Status()
+
+            # Receive results from whoever is broadcasting
             result = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG,
                                     status=status)
-            worker = status.source
+            result_src = status.source
+            # If we have subgroups need to re-add the subgroup that the worker_src
+            # corresponds to
+            if self.subgroups is not None:
+                worker = [subgroup for subgroup in self.subgroups if result_src in subgroup][0]
+            else:
+                worker = result_src
+
             taskid = status.tag
             log.log(_VERBOSE, "Master received from worker %s with tag %s",
                     worker, taskid)
