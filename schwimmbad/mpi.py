@@ -84,16 +84,19 @@ class MPIPool(BasePool):
 
         atexit.register(lambda: MPIPool.close(self))
 
+        if self.subgroups is not None:
+            # Create a subcommunicator object  
+            if not self.is_master():
+                color = [i for i in range(len(self.subgroups)) if self.rank in self.subgroups[i]][0] + 1
+            else:
+                color = 0
+            print('color %d' % color)
+            subcomm = self.comm.Split(color, self.rank)
+            self.subcomm = subcomm
+
         if not self.is_master():
-
-            # Create a subcommunicator object if needed
-            if self.subgroups is not None:
-                # Create a subcommunicator object  
-                color = [i for i in range(len(self.subgroups)) if self.rank in self.subgroups[i]][0]
-                subcomm = self.comm.Split(color, self.rank)
-                self.subcomm = subcomm
-
-            # workers branch here and wait for work
+         # Create a subcommunicator object if needed
+          # workers branch here and wait for work
             try:
                 self.wait()
             except Exception:
@@ -134,11 +137,8 @@ class MPIPool(BasePool):
             return
 
         worker = self.comm.rank
-        print('Worker %d began waiting!' % worker)
         status = MPI.Status()
         while True:
-            print("Worker {0} waiting for task".format(worker))
-
             task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
                                   status=status)
 
@@ -151,7 +151,7 @@ class MPIPool(BasePool):
                     .format(worker, arg, status.tag))
 
             if self.subgroups is not None:
-                arg += (self.subcomm,)
+                arg = (arg,) + (self.subcomm,)
 
             result = func(arg)
 
@@ -210,7 +210,6 @@ class MPIPool(BasePool):
         tasklist = [(tid, (worker, arg)) for tid, arg in enumerate(tasks)]
        
         pending = len(tasklist)
-        print('Oi!')
         while pending:
             t0 = time.time()
             if workerset and tasklist:
