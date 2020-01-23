@@ -73,7 +73,7 @@ class MPIPool(BasePool):
             for subgroup in subgroups:
                 subgroup = set(subgroup)
                 if 0 in subgroup:
-                    print('Warning: Removing rank 0 from subgroup as it will be used as the master thread')
+                    # print('Warning: Removing rank 0 from subgroup as it will be used as the master thread')
                     subgroup.discard(0)
                 self.subgroups.append(subgroup)
         else:
@@ -134,9 +134,10 @@ class MPIPool(BasePool):
             return
 
         worker = self.comm.rank
+        print('Worker %d began waiting!' % worker)
         status = MPI.Status()
         while True:
-            log.log(_VERBOSE, "Worker {0} waiting for task".format(worker))
+            print("Worker {0} waiting for task".format(worker))
 
             task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
                                   status=status)
@@ -209,7 +210,7 @@ class MPIPool(BasePool):
         tasklist = [(tid, (worker, arg)) for tid, arg in enumerate(tasks)]
        
         pending = len(tasklist)
-
+        print('Oi!')
         while pending:
             t0 = time.time()
             if workerset and tasklist:
@@ -221,7 +222,7 @@ class MPIPool(BasePool):
                 log.log(_VERBOSE, "Sent task %s to worker %s with tag %s",
                         task[1], worker, taskid)
                 self.comm.send(task, dest=worker, tag=taskid)
-
+                print('Sent a task!')
             if tasklist:
                 flag = self.comm.Iprobe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
                 if not flag:
