@@ -75,7 +75,7 @@ class MPIPool(BasePool):
                 if 0 in subgroup:
                     # print('Warning: Removing rank 0 from subgroup as it will be used as the master thread')
                     subgroup.discard(0)
-                self.subgroups.append(subgroup)
+                self.subgroups.append(frozenset(subgroup))
         else:
             self.subgroups = subgroups
 
@@ -213,7 +213,7 @@ class MPIPool(BasePool):
 
         # If there are subgroups, send a task to each group rather than each worker
         if self.subgroups is not None: 
-            workerset = self.subgroups.copy()
+            workerset = set(self.subgroups.copy())
         else:
             workerset = self.workers.copy()
     
