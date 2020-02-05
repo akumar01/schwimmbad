@@ -172,7 +172,7 @@ class MPIPool(BasePool):
         if callback is not None:
             callback()
 
-    def map(self, task_fn, tasks, callback=None, fargs=None, track_results=True):
+    def map(self, task_fn, tasks, callback=None, fargs=None, map_fn=None, track_results=False):
         """Evaluate a function or callable on each task in parallel using MPI.
 
         The callable, ``worker``, is called on each element of the ``tasks``
@@ -197,6 +197,9 @@ class MPIPool(BasePool):
             callback is only called on the master thread.
         fargs : tuple, optional
             additional arguments to send to worker
+        map_fn : callable
+            A function or callable object that takes the task as an input and modifies them 
+            before they are sent out to worker threads (called before fargs are appended to the task)
         track_result : Boolean
             Should we track the results in memory (disable to throw them away once
             passed to the callback function)
@@ -225,8 +228,12 @@ class MPIPool(BasePool):
                 worker = workerset.pop()
                 taskid, task = tasklist.pop()
 
+                if map_fn is not None:
+                    task = map_fn(task)
+
                 if fargs is not None:
                     task = (task[0], task[1] + fargs)
+
                 log.log(_VERBOSE, "Sent task %s to worker %s with tag %s",
                         task[1], worker, taskid)
 
